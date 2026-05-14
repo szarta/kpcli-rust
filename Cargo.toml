@@ -1,0 +1,36 @@
+[package]
+name = "kpcli-rust"
+version = "0.1.0"
+edition = "2021"
+description = "Offline-only command-line KeePass (KDBX4) client"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+keepass = { version = "0.12", default-features = false }
+clap = { version = "4", features = ["derive"] }
+rustyline = { version = "14", default-features = false, features = ["with-file-history"] }
+rpassword = "7"
+anyhow = "1"
+zeroize = { version = "1", features = ["zeroize_derive"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+seccompiler = "0.4"
+libc = "0.2"
+
+[features]
+# `fixture` is only used by examples/make_fixture.rs to generate a test KDBX4.
+# It is NOT enabled in the shipped binary, so write paths through the keepass
+# crate cannot be reached at runtime.
+fixture = ["keepass/save_kdbx4"]
+
+[[example]]
+name = "make_fixture"
+required-features = ["fixture"]
+
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+opt-level = 3

@@ -1,5 +1,5 @@
 // Build a small KDBX4 database for end-to-end testing of kpcli-rust.
-// Run with:  cargo run --features fixture --example make_fixture -- /tmp/test.kdbx testpass
+// Run with:  cargo run --example make_fixture -- /tmp/test.kdbx testpass
 
 use keepass::{
     db::{fields, Database},

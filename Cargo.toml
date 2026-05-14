@@ -7,7 +7,12 @@ license = "MIT OR Apache-2.0"
 publish = false
 
 [dependencies]
-keepass = { version = "0.12", default-features = false }
+keepass = { version = "0.12", default-features = false, features = ["save_kdbx4"] }
+# rust-argon2 (library name `argon2`) is already pulled in transitively by
+# keepass; we depend on it directly so we can construct
+# `KdfConfig::Argon2id { version: argon2::Version::Version13, .. }` for new
+# databases.
+rust-argon2 = "3"
 clap = { version = "4", features = ["derive"] }
 rustyline = { version = "14", default-features = false, features = ["with-file-history"] }
 rpassword = "7"
@@ -17,16 +22,6 @@ zeroize = { version = "1", features = ["zeroize_derive"] }
 [target.'cfg(target_os = "linux")'.dependencies]
 seccompiler = "0.4"
 libc = "0.2"
-
-[features]
-# `fixture` is only used by examples/make_fixture.rs to generate a test KDBX4.
-# It is NOT enabled in the shipped binary, so write paths through the keepass
-# crate cannot be reached at runtime.
-fixture = ["keepass/save_kdbx4"]
-
-[[example]]
-name = "make_fixture"
-required-features = ["fixture"]
 
 [profile.release]
 strip = true

@@ -628,6 +628,7 @@ dependencies = [
  "keepass",
  "libc",
  "rpassword",
+ "rust-argon2",
  "rustyline",
  "seccompiler",
  "zeroize",

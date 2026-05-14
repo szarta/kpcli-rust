@@ -8,9 +8,8 @@ below.
 
 ## Status
 
-Read-only. Open a database, navigate it, search it, print entries. Edit and
-save are deliberately not built into the shipped binary; see
-[Scope](#deliberately-out-of-scope).
+Create, open, navigate, search, edit, save. All operations are local —
+the binary never opens a network socket.
 
 ## Install
 
@@ -23,6 +22,17 @@ Requires a recent Rust toolchain (developed against 1.90).
 
 ## Use
 
+### Create a new database
+
+```bash
+kpcli-rust init /path/to/new.kdbx
+# prompts twice for the master password; refuses to overwrite an existing file.
+# Crypto: Argon2id (50 iters, 1 GiB memory, 4-way parallelism) + ChaCha20.
+```
+
+The first save is slow on purpose — that is the Argon2id derivation. On
+subsequent opens the cost is paid once per session.
+
 ### Interactive shell (kpcli-style)
 
 ```bash
@@ -30,7 +40,10 @@ kpcli-rust /path/to/db.kdbx
 # or:  kpcli-rust open /path/to/db.kdbx
 ```
 
-You will be prompted for the master password on `/dev/tty`. The REPL accepts:
+You will be prompted for the master password on `/dev/tty`. The REPL has a
+`*` after the group path when there are unsaved changes.
+
+**Read commands**
 
 | command            | what it does                                                       |
 | ------------------ | ------------------------------------------------------------------ |
@@ -40,7 +53,43 @@ You will be prompted for the master password on `/dev/tty`. The REPL accepts:
 | `cd <path>`        | change group; `/` for root, `..` for parent, absolute or relative  |
 | `show <entry> [-f]`| print entry fields; `-f` reveals the password instead of hiding it |
 | `find <query>`     | case-insensitive substring search over Title / UserName / URL / Notes |
-| `quit` / `exit`    | leave the shell                                                    |
+
+**Edit commands**
+
+| command                       | what it does                                                                 |
+| ----------------------------- | ---------------------------------------------------------------------------- |
+| `mkgroup <name>`              | create a new subgroup at the current group                                   |
+| `add <title>`                 | create a new entry at the current group; prompts for username/password/url/notes |
+| `set <entry> <field> <value>` | update `title` / `username` / `url` / `notes`; everything after the field is the value (no quoting required) |
+| `set <entry> password`        | re-prompt for a new password (hidden, confirmed); inline password is refused |
+| `rm <name>`                   | delete an entry or an empty group at the current group                       |
+| `rm -r <name>`                | delete a group recursively                                                   |
+| `save`                        | persist changes — see [Save semantics](#save-semantics) below                |
+
+**Exit**
+
+| command           | what it does                                                  |
+| ----------------- | ------------------------------------------------------------- |
+| `quit` / `exit`   | leave; refuses if there are unsaved changes                   |
+| `quit!` / `exit!` | leave, discarding unsaved changes                             |
+
+### Save semantics
+
+`save` is crash-safe by construction:
+
+1. The database is encrypted and written to `<db>.tmp`. The file is
+   `fsync`'d before close.
+2. If `<db>` exists, it is renamed to `<db>.bak`.
+3. `<db>.tmp` is renamed to `<db>`.
+
+Both renames are atomic within a single filesystem. A crash between (2)
+and (3) leaves the previous database at `.bak`. A crash between (1) and
+(2) leaves the original intact and a leftover `.tmp` (the next `save`
+refuses to proceed until you remove it).
+
+`save` re-encrypts using the master password that opened the session —
+no extra prompt. The password is held in a `Zeroizing<String>` for the
+lifetime of the REPL and zeroed on exit.
 
 ### One-shot subcommands
 
@@ -50,7 +99,10 @@ kpcli-rust show /path/to/db.kdbx /Email/personal -f    # password revealed
 kpcli-rust find /path/to/db.kdbx prod
 ```
 
-Each one-shot re-prompts for the master password — there is no agent, no
+One-shot subcommands are **read-only** by design — there is no
+`kpcli-rust add` / `set` / `rm` / `save`. Edits happen only from inside
+the REPL, so a misfiring shell loop cannot clobber a database. Each
+one-shot re-prompts for the master password; there is no agent, no
 session, and no cached key on disk.
 
 ### Verify the sandbox
@@ -166,14 +218,17 @@ database itself is held in memory while the program runs; exit (or
 These are *not* present, by design. Adding any of them is a deliberate
 decision that should be re-evaluated against the threat model.
 
-- **Edit / save.** The `keepass` crate's `save_kdbx4` feature is enabled
-  only for `examples/make_fixture.rs`, behind a `fixture` cargo feature.
-  It is never compiled into the shipped binary.
+- **Edit / save from one-shot subcommands.** Mutation is REPL-only —
+  `kpcli-rust add` / `set` / `rm` / `save` do not exist. The
+  `keepass/save_kdbx4` feature is on, but the only way to reach a
+  mutating call path from a shell script is to interactively drive the
+  REPL.
 - **KDBX3 / legacy v1 `.kdb`.** KDBX4 only.
 - **Keyfiles, YubiKey challenge-response, TOTP.**
 - **Clipboard / auto-type / browser integration.**
 - **Reading the master password from stdin or an env var.** Removes a
   scripting footgun and forces the password to come from `/dev/tty`.
+- **Password generation.** Bring your own.
 
 ## Layout
 
@@ -182,12 +237,12 @@ decision that should be re-evaluated against the threat model.
 ├── Cargo.toml
 ├── deny.toml
 ├── examples/
-│   └── make_fixture.rs   # cargo run --features fixture --example make_fixture -- <path> <pw>
+│   └── make_fixture.rs   # cargo run --example make_fixture -- <path> <pw>
 └── src/
     ├── main.rs           # CLI dispatch; calls sandbox::lockdown() first
     ├── sandbox.rs        # seccomp-bpf filter + selftest
-    ├── db.rs             # KDBX4 open with zeroized master-password buffer
-    └── repl.rs           # interactive shell + one-shot show/find
+    ├── db.rs             # KDBX4 open / init / save_atomic; zeroized master-password buffer
+    └── repl.rs           # interactive shell (read + edit) + one-shot read commands
 ```
 
 ## License

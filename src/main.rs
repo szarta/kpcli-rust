@@ -25,6 +25,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Create a new empty KDBX4 database at the given path (Argon2id + ChaCha20).
+    Init {
+        db: PathBuf,
+    },
     /// Open a database and start the interactive shell.
     Open {
         db: PathBuf,
@@ -61,6 +65,7 @@ fn real_main() -> Result<()> {
 
     let cli = Cli::parse();
     match cli.command {
+        Some(Command::Init { db }) => db::init_interactive(&db),
         Some(Command::Open { db }) => repl::run(&db),
         Some(Command::Show {
             db,

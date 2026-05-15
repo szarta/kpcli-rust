@@ -15,6 +15,24 @@ use zeroize::Zeroizing;
 pub struct OpenedDb {
     pub database: Database,
     pub password: Zeroizing<String>,
+    /// (dev, ino) of the database file at open time, on Unix. Used by
+    /// `save_atomic` to detect another process having replaced the file
+    /// between open and save — a lightweight alternative to advisory
+    /// flock that avoids leaving a `.lock` sidecar on disk. `None` on
+    /// non-Unix or if metadata could not be read.
+    pub open_fs_id: Option<(u64, u64)>,
+}
+
+/// Read the (dev, ino) pair for `path` if available. Used to detect
+/// concurrent saves on the same database (see [`save_atomic`]).
+#[cfg(unix)]
+fn fs_id_of(path: &Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(path).ok().map(|m| (m.dev(), m.ino()))
+}
+#[cfg(not(unix))]
+fn fs_id_of(_: &Path) -> Option<(u64, u64)> {
+    None
 }
 
 /// Prompt for the master password without echoing and open the KDBX4 file.
@@ -27,7 +45,12 @@ pub fn open_interactive(path: &Path) -> Result<OpenedDb> {
         .with_context(|| format!("opening database file {}", path.display()))?;
     let key = DatabaseKey::new().with_password(&password);
     let database = Database::open(&mut file, key).map_err(|e| friendly_open_error(e, path))?;
-    Ok(OpenedDb { database, password })
+    let open_fs_id = fs_id_of(path);
+    Ok(OpenedDb {
+        database,
+        password,
+        open_fs_id,
+    })
 }
 
 /// Translate a [`DatabaseOpenError`] into a user-facing message. The KDBX4
@@ -91,15 +114,21 @@ pub fn init_interactive(path: &Path) -> Result<()> {
     }
 
     // Save through the same atomic path the REPL uses, so init mirrors
-    // production write semantics.
-    save_atomic(&mut database, path, &password)?;
+    // production write semantics. There is no prior file, so no expected
+    // fs-id to assert against.
+    save_atomic(&mut database, path, &password, None)?;
     println!("created: {} (Argon2id + ChaCha20)", path.display());
     Ok(())
 }
 
-/// Returned by [`save_atomic`] so callers can report where the backup landed.
+/// Returned by [`save_atomic`] so callers can report where the backup
+/// landed and update their open-time fs-id snapshot for the next save.
 pub struct SaveOutcome {
     pub backup: Option<PathBuf>,
+    /// (dev, ino) of the freshly written database file. The REPL stores
+    /// this so the next save can detect a concurrent kpcli-rust that
+    /// replaced the file in the meantime.
+    pub new_fs_id: Option<(u64, u64)>,
 }
 
 /// Save a database to `path` with the given password, with a crash-safe
@@ -111,10 +140,17 @@ pub struct SaveOutcome {
 ///
 /// A crash between (2) and (3) leaves the previous DB at `.bak`; a crash
 /// between (1) and (2) leaves the original intact and a leftover `.tmp`.
+///
+/// `expected_fs_id` is the (dev, ino) the caller recorded at open time
+/// (or after the previous save). If it does not match the file at `path`
+/// right now, another process has saved over it — refuse rather than
+/// silently clobbering. Pass `None` to skip the check (e.g. the initial
+/// save during `init` where no prior file existed).
 pub fn save_atomic(
     database: &mut Database,
     path: &Path,
     password: &str,
+    expected_fs_id: Option<(u64, u64)>,
 ) -> Result<SaveOutcome> {
     let tmp_path = sibling_with_suffix(path, "tmp")?;
     let bak_path = sibling_with_suffix(path, "bak")?;
@@ -124,6 +160,27 @@ pub fn save_atomic(
             "stale {} from a previous interrupted save; inspect and remove before retrying",
             tmp_path.display()
         );
+    }
+
+    // Concurrent-save guard: if the file on disk no longer matches the
+    // (dev, ino) the caller recorded at open time, another kpcli-rust
+    // (or some other writer) has replaced it. Refuse rather than
+    // overwrite their work. The user can quit and reopen to integrate.
+    if let Some(expected) = expected_fs_id {
+        match fs_id_of(path) {
+            Some(actual) if actual == expected => {}
+            Some(_) => {
+                anyhow::bail!(
+                    "{} was modified by another process since it was opened; \
+                     `quit!` (discarding changes here) and reopen to pick up the new version",
+                    path.display()
+                );
+            }
+            None => {
+                // Can't read metadata — disk gone, perms broken, etc. The
+                // subsequent file ops will surface a clearer error.
+            }
+        }
     }
 
     {
@@ -171,7 +228,8 @@ pub fn save_atomic(
     std::fs::rename(&tmp_path, path)
         .with_context(|| format!("renaming {} -> {}", tmp_path.display(), path.display()))?;
 
-    Ok(SaveOutcome { backup })
+    let new_fs_id = fs_id_of(path);
+    Ok(SaveOutcome { backup, new_fs_id })
 }
 
 fn sibling_with_suffix(path: &Path, suffix: &str) -> Result<PathBuf> {

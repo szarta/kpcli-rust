@@ -14,13 +14,18 @@ use crate::db::{self, OpenedDb};
 // `Database::entry`, both of which return refs tied to `&Database`.
 
 pub fn run(db_path: &Path) -> Result<()> {
-    let OpenedDb { database, password } = db::open_interactive(db_path)?;
+    let OpenedDb {
+        database,
+        password,
+        open_fs_id,
+    } = db::open_interactive(db_path)?;
     let mut shell = Shell {
         database,
         db_path: db_path.to_path_buf(),
         password,
         cwd: Vec::new(),
         dirty: false,
+        last_known_fs_id: open_fs_id,
     };
     shell.repl()
 }
@@ -35,6 +40,10 @@ struct Shell {
     cwd: Vec<String>,
     /// Set by any mutating command; cleared by `save`. Quit warns if set.
     dirty: bool,
+    /// (dev, ino) of `db_path` as of open or our most recent save. Passed
+    /// to `save_atomic` so we refuse to clobber if another kpcli-rust
+    /// rewrote the file in the meantime.
+    last_known_fs_id: Option<(u64, u64)>,
 }
 
 enum ControlFlow {
@@ -590,8 +599,14 @@ impl Shell {
     }
 
     fn cmd_save(&mut self) -> Result<()> {
-        let outcome = db::save_atomic(&mut self.database, &self.db_path, &self.password)?;
+        let outcome = db::save_atomic(
+            &mut self.database,
+            &self.db_path,
+            &self.password,
+            self.last_known_fs_id,
+        )?;
         self.dirty = false;
+        self.last_known_fs_id = outcome.new_fs_id;
         match outcome.backup {
             Some(bak) => println!(
                 "saved: {} (backup: {})",

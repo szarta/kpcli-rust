@@ -95,6 +95,24 @@ and (3) leaves the previous database at `.bak`. A crash between (1) and
 (2) leaves the original intact and a leftover `.tmp` (the next `save`
 refuses to proceed until you remove it).
 
+**Only one `.bak` is kept.** Every `save` overwrites it with the
+immediately-previous version. This is deliberate: timestamped backup
+files would leak a record of when the database was modified, which
+conflicts with the "leave no usage trace" posture. If you want deeper
+recovery history, use filesystem snapshots (ZFS / Btrfs / APFS) or
+encrypt-then-archive tools like `borg` / `restic` — they keep history
+in a single tracked location instead of strewing per-save artefacts
+next to the live database.
+
+**Concurrent saves are refused, not flocked.** kpcli-rust records the
+database file's `(dev, inode)` at open time. If `save` finds that the
+file on disk no longer matches — because another kpcli-rust (or any
+other writer) replaced it in the interim — the save is refused, your
+in-memory changes are preserved, and you can `quit!` to drop them and
+reopen the new version. This avoids a `.lock` sidecar file (which
+would itself be a usage trace) at the cost of not preventing the rare
+race where two processes save at the same instant.
+
 `save` re-encrypts using the master password that opened the session —
 no extra prompt. The password is held in a `Zeroizing<String>` for the
 lifetime of the REPL and zeroed on exit.

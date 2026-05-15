@@ -14,7 +14,9 @@ keepass = { version = "0.12", default-features = false, features = ["save_kdbx4"
 # databases.
 rust-argon2 = "3"
 clap = { version = "4", features = ["derive"] }
-rustyline = { version = "14", default-features = false, features = ["with-file-history"] }
+# No `with-file-history`: kpcli-rust deliberately keeps no persistent
+# command history. See the comment in src/repl.rs.
+rustyline = { version = "14", default-features = false }
 rpassword = "7"
 anyhow = "1"
 zeroize = { version = "1", features = ["zeroize_derive"] }
@@ -23,9 +25,27 @@ zeroize = { version = "1", features = ["zeroize_derive"] }
 seccompiler = "0.4"
 libc = "0.2"
 
+[target.'cfg(unix)'.dev-dependencies]
+# Already in the tree transitively via rustyline; we add `term` (pty) for
+# integration tests. Dev-dependency only — never linked into the release
+# binary.
+nix = { version = "0.28", features = ["term"] }
+libc = "0.2"
+
 [profile.release]
 strip = true
 lto = "thin"
 codegen-units = 1
 panic = "abort"
+opt-level = 3
+
+# Argon2 is a hot CPU loop — debug builds are ~30x slower for the *same*
+# work, which makes `cargo test` painful (a single 1 GiB derivation takes
+# minutes). Force opt-level 3 on argon2 even in dev/test; everything else
+# stays debug for fast incremental builds.
+[profile.dev.package.rust-argon2]
+opt-level = 3
+[profile.dev.package.sha2]
+opt-level = 3
+[profile.dev.package.chacha20]
 opt-level = 3

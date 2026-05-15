@@ -43,6 +43,13 @@ kpcli-rust /path/to/db.kdbx
 You will be prompted for the master password on `/dev/tty`. The REPL has a
 `*` after the group path when there are unsaved changes.
 
+The REPL keeps **no command history** — nothing is loaded at startup,
+nothing is recorded during the session, nothing is written on exit. This
+is intentional so the tool leaves no trace of usage on the host
+filesystem (relevant when the binary is run inside an encrypted volume
+and the outside view must not reveal what was looked up). The rustyline
+`with-file-history` feature is not enabled in `Cargo.toml`.
+
 **Read commands**
 
 | command            | what it does                                                       |
@@ -51,7 +58,7 @@ You will be prompted for the master password on `/dev/tty`. The REPL has a
 | `pwd`              | print the current group path                                       |
 | `ls [path]`        | list groups (`name/`) and entries in the current or given group    |
 | `cd <path>`        | change group; `/` for root, `..` for parent, absolute or relative  |
-| `show <entry> [-f]`| print entry fields; `-f` reveals the password instead of hiding it |
+| `show <entry> [-f]`| print entry fields (canonical + any custom string fields); `-f` reveals the password and any protected custom fields |
 | `find <query>`     | case-insensitive substring search over Title / UserName / URL / Notes |
 
 **Edit commands**
@@ -59,11 +66,12 @@ You will be prompted for the master password on `/dev/tty`. The REPL has a
 | command                       | what it does                                                                 |
 | ----------------------------- | ---------------------------------------------------------------------------- |
 | `mkgroup <name>`              | create a new subgroup at the current group                                   |
-| `add <title>`                 | create a new entry at the current group; prompts for username/password/url/notes |
+| `add <title>`                 | create a new entry at the current group; prompts for username/password/url/notes. Type `.` (or Ctrl-D) at any prompt to abort without creating the entry. |
 | `set <entry> <field> <value>` | update `title` / `username` / `url` / `notes`; everything after the field is the value (no quoting required) |
 | `set <entry> password`        | re-prompt for a new password (hidden, confirmed); inline password is refused |
 | `rm <name>`                   | delete an entry or an empty group at the current group                       |
 | `rm -r <name>`                | delete a group recursively                                                   |
+| `mv <name> <dst>`             | rename in place (`<dst>` bare), move into an existing group (`<dst>` trailing `/`), or move + rename (`<dst>` with slashes). Refuses to overwrite. |
 | `save`                        | persist changes — see [Save semantics](#save-semantics) below                |
 
 **Exit**
@@ -90,6 +98,11 @@ refuses to proceed until you remove it).
 `save` re-encrypts using the master password that opened the session —
 no extra prompt. The password is held in a `Zeroizing<String>` for the
 lifetime of the REPL and zeroed on exit.
+
+On Unix the new database and its `.bak` are written with mode `0600`,
+regardless of umask. If you migrate an existing world- or group-readable
+KDBX into kpcli-rust, the first `save` will normalize the backup to
+`0600` as well.
 
 ### One-shot subcommands
 

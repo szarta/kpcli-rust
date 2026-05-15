@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use keepass::{
     config::{DatabaseConfig, KdfConfig, OuterCipherConfig},
     db::Database,
+    error::{DatabaseKeyError, DatabaseOpenError},
     DatabaseKey,
 };
 use std::path::{Path, PathBuf};
@@ -25,9 +26,27 @@ pub fn open_interactive(path: &Path) -> Result<OpenedDb> {
     let mut file = std::fs::File::open(path)
         .with_context(|| format!("opening database file {}", path.display()))?;
     let key = DatabaseKey::new().with_password(&password);
-    let database = Database::open(&mut file, key)
-        .with_context(|| format!("decrypting {}", path.display()))?;
+    let database = Database::open(&mut file, key).map_err(|e| friendly_open_error(e, path))?;
     Ok(OpenedDb { database, password })
+}
+
+/// Translate a [`DatabaseOpenError`] into a user-facing message. The KDBX4
+/// format has no flag for "this database needs a keyfile" — a wrong
+/// password and a missing keyfile produce the *same* HMAC failure
+/// (`DatabaseKeyError::IncorrectKey`). Enumerate the possibilities instead
+/// of pretending we can distinguish them.
+fn friendly_open_error(err: DatabaseOpenError, path: &Path) -> anyhow::Error {
+    if matches!(err, DatabaseOpenError::Key(DatabaseKeyError::IncorrectKey)) {
+        return anyhow::anyhow!(
+            "could not decrypt {}. One of:\n  \
+             - the master password is wrong\n  \
+             - the database is protected with a keyfile (kpcli-rust does not \
+             support keyfiles by design; see README \"Deliberately out of scope\")\n  \
+             - the database file is corrupted",
+            path.display()
+        );
+    }
+    anyhow::Error::new(err).context(format!("decrypting {}", path.display()))
 }
 
 /// Create a fresh KDBX4 database at `path`. Refuses to overwrite. Prompts
@@ -55,11 +74,13 @@ pub fn init_interactive(path: &Path) -> Result<()> {
     let mut config = DatabaseConfig::default();
     config.outer_cipher_config = OuterCipherConfig::ChaCha20;
     config.kdf_config = KdfConfig::Argon2id {
-        // Match keepass-rs's defaults for Argon2d (same units): iterations,
-        // memory in KiB, parallelism. ~1 GiB memory is intentionally
-        // expensive — this is a password store, not a hot loop.
+        // IMPORTANT: keepass-rs interprets `memory` as BYTES and converts to
+        // KiB internally (mem_cost = memory / 1024). 1 GiB is intentionally
+        // expensive — this is a password store, not a hot loop. The integration
+        // tests assert this value end-to-end via the persisted KDF config; do
+        // not lower it without also updating tests and the README.
         iterations: 50,
-        memory: 1024 * 1024,
+        memory: 1024 * 1024 * 1024,
         parallelism: 4,
         version: argon2::Version::Version13,
     };
@@ -107,11 +128,18 @@ pub fn save_atomic(
 
     {
         use std::io::Write;
+        let mut opts = std::fs::File::options();
         // `create_new` errors out instead of clobbering — guards against TOCTOU
         // between the `.exists()` check above and the actual create.
-        let mut f = std::fs::File::options()
-            .write(true)
-            .create_new(true)
+        opts.write(true).create_new(true);
+        // 0600 at creation time so a stat() race during save cannot expose a
+        // group/world-readable password file (umask alone is not enough).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut f = opts
             .open(&tmp_path)
             .with_context(|| format!("creating {}", tmp_path.display()))?;
         let key = DatabaseKey::new().with_password(password);
@@ -126,6 +154,15 @@ pub fn save_atomic(
     let backup = if path.exists() {
         std::fs::rename(path, &bak_path)
             .with_context(|| format!("renaming {} -> {}", path.display(), bak_path.display()))?;
+        // The original may have come from a migration where it was already
+        // group-readable; normalize the backup explicitly so we never leave a
+        // permissive copy behind.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bak_path, std::fs::Permissions::from_mode(0o600))
+                .with_context(|| format!("chmod 0600 {}", bak_path.display()))?;
+        }
         Some(bak_path)
     } else {
         None

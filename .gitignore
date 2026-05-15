@@ -2,3 +2,7 @@
 Cargo.lock.bak
 *.kdbx
 .history
+/todo-sqlite-cli.db
+/todo-sqlite-cli.db-shm
+/todo-sqlite-cli.db-wal
+/.todo-sqlite-cli

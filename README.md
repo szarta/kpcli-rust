@@ -310,6 +310,27 @@ the io_uring addition is the most consequential change in this scan.
 Terminal-output sanitization closes the dual of name validation (we
 controlled what we wrote *in*; now we also control what we render *out*).
 
+**Automated checks (pre-1.0.0):**
+
+| check | result | what it covers |
+| --- | --- | --- |
+| `cargo test` | 21/21 pass across 15 integration test files | Every REPL command, atomic-save semantics, dirty marker, 0600 perms, KDF strength, stale-tmp refusal, both TOCTOU branches in `init`, concurrent-save refusal, name validation, terminal-injection escaping, purge-history, sandbox selftest, wrong-password message |
+| `cargo deny check bans` | bans ok | `deny.toml` lists every HTTP / TLS / DNS / async-runtime / socket-abstraction crate; none are in the tree |
+| `cargo clippy --all-targets -- -D warnings` | clean | All targets including tests; zero warnings at the default lint set |
+| `cargo audit` | 0 findings against 1090 advisories | RustSec advisory DB scan of all 151 resolved crate dependencies |
+| dependency-tree scan | clean | `cargo tree --edges normal` returns no match for `reqwest\|hyper\|tokio\|ureq\|isahc\|curl\|rustls\|native-tls\|openssl\|mio\|socket2\|hickory\|trust-dns` |
+| sandbox selftest | EACCES on both `socket(AF_INET)` and `io_uring_setup` | Confirms the seccomp filter is actually installed and covers both the classic and io_uring network paths |
+
+Run each yourself before a release:
+
+```bash
+cargo test
+cargo deny check bans
+cargo clippy --all-targets -- -D warnings
+cargo audit
+./target/release/kpcli-rust selftest
+```
+
 ## Deliberately out of scope
 
 These are *not* present, by design. Adding any of them is a deliberate

@@ -154,6 +154,10 @@ impl Shell {
                 self.cmd_save()?;
                 Ok(ControlFlow::Continue)
             }
+            "purge-history" => {
+                self.cmd_purge_history()?;
+                Ok(ControlFlow::Continue)
+            }
             "quit" | "exit" | "q" => self.handle_quit(false),
             "quit!" | "exit!" => self.handle_quit(true),
             other => {
@@ -183,11 +187,14 @@ impl Shell {
 
         let mut printed = false;
         for sub in group.groups() {
-            println!("{}/", sub.name);
+            println!("{}/", sanitize_for_display(&sub.name));
             printed = true;
         }
         for entry in group.entries() {
-            println!("{}", entry.get_title().unwrap_or("<no title>"));
+            println!(
+                "{}",
+                sanitize_for_display(entry.get_title().unwrap_or("<no title>"))
+            );
             printed = true;
         }
         if !printed {
@@ -246,9 +253,7 @@ impl Shell {
             .first()
             .copied()
             .ok_or_else(|| anyhow::anyhow!("mkgroup: missing group name"))?;
-        if name.contains('/') {
-            anyhow::bail!("mkgroup: name must not contain '/'");
-        }
+        validate_name("mkgroup", name)?;
 
         // Existence check via immutable borrow, scoped tightly so we can take
         // a mutable borrow afterward.
@@ -272,9 +277,7 @@ impl Shell {
             .first()
             .copied()
             .ok_or_else(|| anyhow::anyhow!("add: missing entry title"))?;
-        if title.contains('/') {
-            anyhow::bail!("add: title must not contain '/' (use cd into the group first)");
-        }
+        validate_name("add", title)?;
 
         // Existence check first, before mutable borrow.
         {
@@ -333,7 +336,7 @@ impl Shell {
         if !notes.is_empty() {
             e.set_unprotected(fields::NOTES, notes);
         }
-        drop(e);
+        let _ = e;
 
         self.dirty = true;
         println!("added entry: {title}");
@@ -383,6 +386,13 @@ impl Shell {
         } else {
             // Reconstruct value from the raw line so spaces/quotes survive.
             let value = extract_value_after(full_line, entry_name, field_raw)?;
+            // Title is also the lookup key for entries; apply the same
+            // name validation as `add` so a `set <e> title <bad-name>`
+            // can't sneak in characters that would break navigation or
+            // visibly hide an entry on the terminal.
+            if field == fields::TITLE && !value.is_empty() {
+                validate_name("set title", value.as_str())?;
+            }
             let mut e = self
                 .database
                 .entry_mut(entry_id)
@@ -540,12 +550,7 @@ impl Shell {
             (self.cwd.clone(), dst.to_string())
         };
 
-        if new_name.is_empty() || new_name == "." || new_name == ".." {
-            anyhow::bail!("mv: invalid destination name {new_name:?}");
-        }
-        if new_name.contains('/') {
-            anyhow::bail!("mv: destination name must not contain '/'");
-        }
+        validate_name("mv", new_name.as_str())?;
 
         // Reject self-move (no-op): same parent, same name.
         if target_parent_path == self.cwd && new_name == src_name {
@@ -598,6 +603,44 @@ impl Shell {
         Ok(())
     }
 
+    /// Clear the per-entry history (previous values of fields, including
+    /// passwords) on every entry in the database. KDBX clients like
+    /// KeePassXC retain up to N old versions per entry; if the user
+    /// rotates a leaked password they likely want the prior value gone
+    /// from the file too. Not auto-purged on `set` so existing history
+    /// is preserved by default — call this explicitly.
+    fn cmd_purge_history(&mut self) -> Result<()> {
+        let ids: Vec<keepass::db::EntryId> = self
+            .database
+            .iter_all_entries()
+            .map(|e| e.id())
+            .collect();
+        let mut count = 0usize;
+        for id in ids {
+            let mut e = match self.database.entry_mut(id) {
+                Some(e) => e,
+                None => continue,
+            };
+            let had = e
+                .history
+                .as_ref()
+                .is_some_and(|h| !h.get_entries().is_empty());
+            if had {
+                e.history = Some(keepass::db::History::default());
+                count += 1;
+            }
+        }
+        if count > 0 {
+            self.dirty = true;
+            println!(
+                "cleared history on {count} entries (run `save` to persist)"
+            );
+        } else {
+            println!("no entry had history to clear");
+        }
+        Ok(())
+    }
+
     fn cmd_save(&mut self) -> Result<()> {
         let outcome = db::save_atomic(
             &mut self.database,
@@ -645,6 +688,60 @@ impl Shell {
 
 // ---- pure helpers ---------------------------------------------------------
 
+/// Escape any control character — and any byte that could initiate an
+/// ANSI escape or OSC sequence — to a visible `\xHH` form before
+/// printing a value that comes from a KDBX file. Names we create
+/// ourselves are already filtered by [`validate_name`]; this is the
+/// dual at the output boundary, since a migrated or attacker-crafted
+/// DB can carry hostile bytes that would otherwise reach the terminal.
+///
+/// In particular, OSC 52 (`ESC ] 52 ; c ; <base64> BEL`) makes most
+/// modern terminals (xterm, kitty, iTerm2, foot, wezterm) write data
+/// into the system clipboard — defeating the "no clipboard linkage"
+/// stance entirely. Cursor-move sequences can also overwrite the
+/// previously-printed password line.
+fn sanitize_for_display(s: &str) -> std::borrow::Cow<'_, str> {
+    if s.chars().all(|c| !c.is_control() || c == '\n') {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    let mut out = String::with_capacity(s.len() + 8);
+    for c in s.chars() {
+        if !c.is_control() || c == '\n' {
+            out.push(c);
+        } else if (c as u32) < 0x100 {
+            out.push_str(&format!("\\x{:02x}", c as u32));
+        } else {
+            // Other control-like code points (e.g. U+0085 NEL, U+2028 LS).
+            out.push_str(&format!("\\u{{{:x}}}", c as u32));
+        }
+    }
+    std::borrow::Cow::Owned(out)
+}
+
+/// Reject names that would either break path semantics (`.`, `..`, `/`)
+/// or break terminal display (control characters: newlines, tabs, BEL,
+/// ANSI escape introducers, etc.). KDBX names are otherwise free-form
+/// UTF-8 — emoji, accents, non-ASCII are fine.
+fn validate_name(kind: &str, name: &str) -> Result<()> {
+    if name.is_empty() {
+        anyhow::bail!("{kind}: name must not be empty");
+    }
+    if name == "." || name == ".." {
+        anyhow::bail!("{kind}: name must not be '.' or '..'");
+    }
+    for ch in name.chars() {
+        if ch == '/' {
+            anyhow::bail!("{kind}: name must not contain '/' (cd into the parent group)");
+        }
+        if ch.is_control() {
+            anyhow::bail!(
+                "{kind}: name must not contain control characters (newline, tab, escape, ...)"
+            );
+        }
+    }
+    Ok(())
+}
+
 fn print_help() {
     println!(
         "commands:
@@ -665,6 +762,8 @@ edit:
   rm [-r] <name>                delete entry or (with -r) a group
   mv <name> <dst>               rename in place (<dst> bare), or move into a group
                                 (<dst> ends with '/'), or move + rename (<dst> with slashes)
+  purge-history                 clear KDBX per-entry value history (previous passwords etc.)
+                                on every entry; useful after migrating from KeePassXC
   save                          backup-on-save: writes .tmp, renames original to .bak,
                                 then renames .tmp into place
 
@@ -785,7 +884,7 @@ fn entry_full_path(entry: &EntryRef<'_>) -> String {
         if group.parent().is_none() {
             break;
         }
-        chain.push(group.name.clone());
+        chain.push(sanitize_for_display(&group.name).into_owned());
         current = group.parent().map(|p| p.id());
     }
     chain.reverse();
@@ -794,23 +893,28 @@ fn entry_full_path(entry: &EntryRef<'_>) -> String {
     } else {
         format!("/{}/", chain.join("/"))
     };
-    format!("{prefix}{}", entry.get_title().unwrap_or("<no title>"))
+    let title = entry.get_title().unwrap_or("<no title>");
+    format!("{prefix}{}", sanitize_for_display(title))
 }
 
 fn print_entry(entry: &EntryRef<'_>, show_password: bool) {
+    // Every string here may have come from an imported / hostile KDBX;
+    // sanitize before letting it reach the terminal. Names *we* created
+    // are already control-free per validate_name, so this is a no-op for
+    // kpcli-rust-authored entries.
     let title = entry.get_title().unwrap_or("<no title>");
-    println!("Title:    {title}");
+    println!("Title:    {}", sanitize_for_display(title));
     if let Some(v) = entry.get_username() {
-        println!("Username: {v}");
+        println!("Username: {}", sanitize_for_display(v));
     }
     if let Some(v) = entry.get_url() {
-        println!("URL:      {v}");
+        println!("URL:      {}", sanitize_for_display(v));
     }
     if let Some(v) = entry.get(fields::NOTES) {
-        println!("Notes:    {v}");
+        println!("Notes:    {}", sanitize_for_display(v));
     }
     match entry.get_password() {
-        Some(p) if show_password => println!("Password: {p}"),
+        Some(p) if show_password => println!("Password: {}", sanitize_for_display(p)),
         Some(_) => println!("Password: <hidden — pass -f to reveal>"),
         None => println!("Password: <none>"),
     }
@@ -838,10 +942,11 @@ fn print_entry(entry: &EntryRef<'_>, show_password: bool) {
         .collect();
     extras.sort_by(|a, b| a.0.cmp(b.0));
     for (key, value) in extras {
+        let key_s = sanitize_for_display(key);
         if value.is_protected() && !show_password {
-            println!("{key}: <hidden — pass -f to reveal>");
+            println!("{key_s}: <hidden — pass -f to reveal>");
         } else {
-            println!("{key}: {}", value.get());
+            println!("{key_s}: {}", sanitize_for_display(value.get()));
         }
     }
 }
@@ -909,6 +1014,11 @@ fn prompt_line_or_abort(prompt: &str) -> Result<Option<String>> {
 
 /// Like [`prompt_line_or_abort`] but reads from `/dev/tty` without
 /// echoing, via `rpassword`. The same `.` and EOF abort semantics apply.
+///
+/// Side effect of the abort sentinel: a single literal `.` cannot be
+/// used as a password via this prompt. For entries that need such a
+/// password, set it via `set <entry> password` (no abort sentinel
+/// there) or via a different KDBX client.
 fn prompt_password_or_abort(prompt: &str) -> Result<Option<Zeroizing<String>>> {
     match rpassword::prompt_password(prompt) {
         Ok(s) => {

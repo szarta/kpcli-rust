@@ -36,8 +36,8 @@ fn save_refuses_when_db_replaced_by_another_writer() {
         let mut root = db.root_mut();
         let mut e = root.add_entry();
         e.set_unprotected("Title", "from-other-process");
-        drop(e);
-        drop(root);
+        let _ = e;
+        let _ = root;
 
         // Match what kpcli-rust does: write to a tmp, rename into place.
         // (Not necessary for the inode-change semantics, but keeps the

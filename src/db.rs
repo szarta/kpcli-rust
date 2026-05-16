@@ -166,21 +166,28 @@ pub fn save_atomic(
     // (dev, ino) the caller recorded at open time, another kpcli-rust
     // (or some other writer) has replaced it. Refuse rather than
     // overwrite their work. The user can quit and reopen to integrate.
-    if let Some(expected) = expected_fs_id {
-        match fs_id_of(path) {
-            Some(actual) if actual == expected => {}
-            Some(_) => {
-                anyhow::bail!(
-                    "{} was modified by another process since it was opened; \
-                     `quit!` (discarding changes here) and reopen to pick up the new version",
-                    path.display()
-                );
-            }
-            None => {
-                // Can't read metadata — disk gone, perms broken, etc. The
-                // subsequent file ops will surface a clearer error.
-            }
+    //
+    // `expected_fs_id == None` means the caller (init) expects no prior
+    // file. If we find one, an attacker (or another process) materialized
+    // the path during init's Argon2id derivation window — refuse so we
+    // don't silently rename their file to `<db>.bak`.
+    match (expected_fs_id, fs_id_of(path)) {
+        (Some(expected), Some(actual)) if actual != expected => {
+            anyhow::bail!(
+                "{} was modified by another process since it was opened; \
+                 `quit!` (discarding changes here) and reopen to pick up the new version",
+                path.display()
+            );
         }
+        (None, Some(_)) => {
+            anyhow::bail!(
+                "{} was created during init by another process; aborting (try a different path)",
+                path.display()
+            );
+        }
+        // Either matches, or no file exists at the path, or metadata read
+        // failed — let the subsequent file ops surface a clearer error.
+        _ => {}
     }
 
     {
@@ -209,6 +216,34 @@ pub fn save_atomic(
     }
 
     let backup = if path.exists() {
+        // Close the late-window TOCTOU: at the start of save_atomic we
+        // verified there was no prior file (init case) or that the prior
+        // file's fs-id matched (save case). The Argon2id derivation that
+        // just finished took multiple seconds; a foreign file could have
+        // materialized in that window. For the init case we refuse
+        // outright; for the save case we re-verify fs-id has not changed
+        // mid-flight before silently treating the file as "ours".
+        match (expected_fs_id, fs_id_of(path)) {
+            (None, _) => {
+                let _ = std::fs::remove_file(&tmp_path);
+                anyhow::bail!(
+                    "{} materialized during init; aborting before we would have renamed \
+                     a foreign file to {}.bak",
+                    path.display(),
+                    path.display()
+                );
+            }
+            (Some(expected), Some(actual)) if actual != expected => {
+                let _ = std::fs::remove_file(&tmp_path);
+                anyhow::bail!(
+                    "{} was replaced by another process during save; aborting before clobber. \
+                     `quit!` and reopen to integrate.",
+                    path.display()
+                );
+            }
+            _ => {}
+        }
+
         std::fs::rename(path, &bak_path)
             .with_context(|| format!("renaming {} -> {}", path.display(), bak_path.display()))?;
         // The original may have come from a migration where it was already

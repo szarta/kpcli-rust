@@ -35,12 +35,21 @@ pub fn lockdown() -> anyhow::Result<()> {
         libc::SYS_getsockname,
         libc::SYS_getpeername,
         libc::SYS_shutdown,
+        // io_uring (Linux 5.1+, IORING_OP_SOCKET added in 5.19) dispatches
+        // its operations inside the kernel without re-entering the syscall
+        // table, so blocking SYS_socket alone is not enough — a dependency
+        // could submit IORING_OP_SOCKET + IORING_OP_CONNECT + IORING_OP_SEND
+        // entirely through io_uring_enter and reach the network. Block the
+        // entire io_uring entry surface.
+        libc::SYS_io_uring_setup,
+        libc::SYS_io_uring_enter,
+        libc::SYS_io_uring_register,
     ];
 
     let mut rules: BTreeMap<i64, Vec<seccompiler::SeccompRule>> = BTreeMap::new();
     for &sc in blocked {
         // Empty rule vec = match this syscall regardless of arguments.
-        rules.insert(sc as i64, vec![]);
+        rules.insert(sc, vec![]);
     }
 
     let arch = std::env::consts::ARCH
@@ -69,32 +78,57 @@ pub fn lockdown() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Probe the sandbox by attempting a forbidden syscall and confirming it is
-/// denied. Exits non-zero if the syscall unexpectedly succeeds.
+/// Probe the sandbox by attempting forbidden syscalls and confirming each
+/// is denied. Exits non-zero if any unexpectedly succeeds.
 #[cfg(target_os = "linux")]
 pub fn selftest() -> anyhow::Result<()> {
-    // SAFETY: AF_INET/SOCK_STREAM is a benign syscall; we close any returned
-    // descriptor immediately and assert it should never succeed in the first
-    // place because lockdown() has been applied.
+    // Probe 1: classic socket() — the historical network entry point.
     let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
     if fd >= 0 {
-        unsafe {
-            libc::close(fd);
-        }
+        unsafe { libc::close(fd) };
         anyhow::bail!(
             "selftest FAILED: socket(AF_INET, SOCK_STREAM) succeeded — sandbox is NOT in effect"
         );
     }
-    let errno = std::io::Error::last_os_error()
-        .raw_os_error()
-        .unwrap_or(0);
+    let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
     if errno != libc::EACCES {
         anyhow::bail!(
             "selftest FAILED: socket() denied with errno {errno} but expected EACCES ({})",
             libc::EACCES
         );
     }
-    println!("selftest OK: socket(AF_INET) blocked with EACCES, as expected.");
+
+    // Probe 2: io_uring_setup — modern bypass. A dep that builds an
+    // io_uring instance can issue IORING_OP_SOCKET / OP_CONNECT / OP_SEND
+    // entirely inside io_uring_enter without ever hitting socket(2). We
+    // forbid the entire io_uring entry surface; this probe verifies that.
+    //
+    // io_uring_setup signature: int io_uring_setup(u32 entries, struct io_uring_params *p)
+    let mut params: [u8; 120] = [0; 120]; // io_uring_params is < 120 bytes on every arch
+    let rc = unsafe { libc::syscall(libc::SYS_io_uring_setup, 1u32, params.as_mut_ptr()) };
+    if rc >= 0 {
+        // Don't actually try to close — if the kernel returned a real fd
+        // it means our filter failed; print and exit.
+        anyhow::bail!(
+            "selftest FAILED: io_uring_setup succeeded (rc={rc}) — sandbox does NOT block io_uring"
+        );
+    }
+    let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+    // Some kernels return ENOSYS if CONFIG_IO_URING=n. That's also fine
+    // — the syscall is unreachable for any reason. EACCES is what we
+    // installed; accept either.
+    if errno != libc::EACCES && errno != libc::ENOSYS {
+        anyhow::bail!(
+            "selftest FAILED: io_uring_setup denied with errno {errno} \
+             but expected EACCES ({}) or ENOSYS ({})",
+            libc::EACCES,
+            libc::ENOSYS
+        );
+    }
+
+    println!(
+        "selftest OK: socket(AF_INET) and io_uring_setup both blocked, as expected."
+    );
     Ok(())
 }
 

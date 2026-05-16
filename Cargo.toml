@@ -1,6 +1,6 @@
 [package]
 name = "kpcli-rust"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 description = "Offline-only command-line KeePass (KDBX4) client"
 license = "MIT OR Apache-2.0"
@@ -36,7 +36,12 @@ libc = "0.2"
 strip = true
 lto = "thin"
 codegen-units = 1
-panic = "abort"
+# `unwind` rather than `abort` so that a panic deep in keepass-rs's
+# parser (e.g. a malformed timestamp from a hostile KDBX) still runs
+# Drop impls on the way out — most importantly Zeroizing<String> on
+# the master password. abort would skip drop and leave the secret
+# in memory until the kernel reclaims the pages.
+panic = "unwind"
 opt-level = 3
 
 # Argon2 is a hot CPU loop — debug builds are ~30x slower for the *same*

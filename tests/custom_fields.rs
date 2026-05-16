@@ -36,8 +36,8 @@ fn show_lists_custom_string_fields() {
         entry.set_unprotected("Recovery Codes", "11111-22222-33333");
         // Custom *protected* field — TOTP secret, treated like the password.
         entry.set("TOTP Seed", Value::protected("JBSWY3DPEHPK3PXP"));
-        drop(entry);
-        drop(root);
+        let _ = entry;
+        let _ = root;
 
         // Save with the same atomic semantics by going through the REPL? No,
         // the test only needs persistence — use the keepass save API.

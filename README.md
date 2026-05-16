@@ -365,4 +365,4 @@ decision that should be re-evaluated against the threat model.
 
 ## License
 
-MIT OR Apache-2.0.
+MIT — see [LICENSE](LICENSE).

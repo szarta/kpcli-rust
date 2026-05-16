@@ -8,17 +8,24 @@ below.
 
 ## Status
 
-Create, open, navigate, search, edit, save. All operations are local —
-the binary never opens a network socket.
+Create, open, navigate, search, edit, rename / move, save, purge entry
+history. All operations are local — the binary never opens a network
+socket. Current release: **1.0.0**.
 
 ## Install
+
+Either grab a release artifact from
+[GitHub Releases](https://github.com/szarta/kpcli-rust/releases) —
+each `vX.Y.Z` tag publishes a tarball plus `.deb` and `.rpm` packages,
+all shipped alongside `LICENSE`, `THIRD_PARTY_LICENSES.txt`, and a
+CycloneDX SBOM — or build from source:
 
 ```bash
 cargo build --release
 # binary at target/release/kpcli-rust
 ```
 
-Requires a recent Rust toolchain (developed against 1.90).
+Requires a recent Rust toolchain (`rust-toolchain.toml` pins to 1.90).
 
 ## Use
 
@@ -162,7 +169,7 @@ session, and no cached key on disk.
 
 ```bash
 kpcli-rust selftest
-# selftest OK: socket(AF_INET) blocked with EACCES, as expected.
+# selftest OK: socket(AF_INET) and io_uring_setup both blocked, as expected.
 ```
 
 Run this after every build and after kernel / glibc upgrades. A failed
@@ -178,6 +185,15 @@ this binary on this kernel — investigate before opening a real database.
   password, or environment data over the network.
 - **In scope:** accidental network use by a future maintainer (`cargo add
   reqwest` for some unrelated feature).
+- **In scope:** a local process with write access to the directory
+  holding the database — the "drop a file at the path" race against
+  `init`'s no-overwrite check. Mitigated by an `(dev, inode)` snapshot
+  check at the start and end of `save_atomic`.
+- **In scope:** hostile or imported KDBX contents (entries, custom
+  fields, group names) carrying terminal control sequences,
+  malformed timestamps, or other parser-trap inputs. Mitigated by
+  `sanitize_for_display` at output and `panic = "unwind"` so secrets
+  zero on a parser panic.
 - **Out of scope:** a hostile local user with code execution as you, a
   malicious kernel, side channels (CPU, memory, timing), and physical
   attacks on the host.
@@ -221,9 +237,12 @@ and biased toward false positives — adding a banned crate must be a
 deliberate, reviewable decision, not a silent transitive pickup.
 
 ```bash
-cargo install cargo-deny      # one-time
-cargo deny check bans         # run on every CI build
+cargo install cargo-deny           # one-time
+cargo deny check bans              # banned-crate names (the network surface)
+cargo deny check licenses          # accepted-license allow-list
 ```
+
+Both run in CI on every push.
 
 #### 3. seccomp-bpf runtime sandbox (Linux)
 
@@ -310,7 +329,7 @@ the io_uring addition is the most consequential change in this scan.
 Terminal-output sanitization closes the dual of name validation (we
 controlled what we wrote *in*; now we also control what we render *out*).
 
-**Automated checks (pre-1.0.0):**
+**Automated checks (all gating in CI):**
 
 | check | result | what it covers |
 | --- | --- | --- |
@@ -360,21 +379,37 @@ decision that should be re-evaluated against the threat model.
 - **Clipboard / auto-type / browser integration.**
 - **Reading the master password from stdin or an env var.** Removes a
   scripting footgun and forces the password to come from `/dev/tty`.
+- **Reading any file other than the database path the user named.** No
+  history file, no config file, no recently-used list, no keyfile
+  auto-discovery, no `$XDG_*` or `$HOME`-rooted state directory. Each
+  additional file we open is a local-injection surface; the database
+  is the only thing the binary reads from the filesystem during a
+  session.
 - **Password generation.** Bring your own.
 
 ## Layout
 
 ```
 .
-├── Cargo.toml
-├── deny.toml
+├── Cargo.toml                  # crate metadata, dep pins, release profile
+├── Cargo.lock                  # checked in — exact dep versions are part of the security claim
+├── rust-toolchain.toml         # toolchain pin
+├── deny.toml                   # cargo-deny: banned crates + accepted licenses
+├── about.toml / about.hbs      # cargo-about: accepted licenses + report template
+├── LICENSE                     # MIT
+├── README.md                   # this file
+├── .github/
+│   └── workflows/build.yml     # CI: 5 security gates, tests, SBOM/attribution, release packaging
 ├── examples/
-│   └── make_fixture.rs   # cargo run --example make_fixture -- <path> <pw>
-└── src/
-    ├── main.rs           # CLI dispatch; calls sandbox::lockdown() first
-    ├── sandbox.rs        # seccomp-bpf filter + selftest
-    ├── db.rs             # KDBX4 open / init / save_atomic; zeroized master-password buffer
-    └── repl.rs           # interactive shell (read + edit) + one-shot read commands
+│   └── make_fixture.rs         # cargo run --example make_fixture -- <path> <pw>
+├── src/
+│   ├── main.rs                 # CLI dispatch; calls sandbox::lockdown() first
+│   ├── sandbox.rs              # seccomp-bpf filter + selftest (incl. io_uring probe)
+│   ├── db.rs                   # KDBX4 open / init / save_atomic; (dev,ino) concurrent-save guard
+│   └── repl.rs                 # interactive shell (read + edit) + one-shot read commands
+└── tests/                      # 15 integration test files, 21 tests, PTY-driven
+    ├── common/mod.rs           # forkpty harness shared by all tests
+    └── …                       # init / kdf_params / mv / round_trip / sandbox / ...
 ```
 
 ## License

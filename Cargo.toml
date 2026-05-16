@@ -1,0 +1,70 @@
+[package]
+name = "kpcli-rust"
+version = "1.0.0"
+edition = "2021"
+description = "Offline-only command-line KeePass (KDBX4) client with a seccomp-bpf network sandbox"
+license = "MIT"
+authors = ["Brandon Arrendondo <barrendo@gmail.com>"]
+repository = "https://github.com/szarta/kpcli-rust"
+homepage = "https://github.com/szarta/kpcli-rust"
+readme = "README.md"
+keywords = ["keepass", "kdbx", "password-manager", "cli", "offline"]
+categories = ["command-line-utilities", "cryptography", "authentication"]
+# Exclude artefacts only useful inside the repo from the crates.io tarball:
+#   - the GitHub Actions workflow (will not run under crates.io)
+#   - the dev-only todo-sqlite-cli marker / db (already gitignored, but
+#     publish would otherwise warn about untracked files)
+exclude = [
+    ".github/",
+    ".todo-sqlite-cli",
+    "todo-sqlite-cli.db",
+]
+
+[dependencies]
+keepass = { version = "0.12", default-features = false, features = ["save_kdbx4"] }
+# rust-argon2 (library name `argon2`) is already pulled in transitively by
+# keepass; we depend on it directly so we can construct
+# `KdfConfig::Argon2id { version: argon2::Version::Version13, .. }` for new
+# databases.
+rust-argon2 = "3"
+clap = { version = "4", features = ["derive"] }
+# No `with-file-history`: kpcli-rust deliberately keeps no persistent
+# command history. See the comment in src/repl.rs.
+rustyline = { version = "14", default-features = false }
+rpassword = "7"
+anyhow = "1"
+zeroize = { version = "1", features = ["zeroize_derive"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+seccompiler = "0.4"
+libc = "0.2"
+
+[target.'cfg(unix)'.dev-dependencies]
+# Already in the tree transitively via rustyline; we add `term` (pty) for
+# integration tests. Dev-dependency only — never linked into the release
+# binary.
+nix = { version = "0.28", features = ["term"] }
+libc = "0.2"
+
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1
+# `unwind` rather than `abort` so that a panic deep in keepass-rs's
+# parser (e.g. a malformed timestamp from a hostile KDBX) still runs
+# Drop impls on the way out — most importantly Zeroizing<String> on
+# the master password. abort would skip drop and leave the secret
+# in memory until the kernel reclaims the pages.
+panic = "unwind"
+opt-level = 3
+
+# Argon2 is a hot CPU loop — debug builds are ~30x slower for the *same*
+# work, which makes `cargo test` painful (a single 1 GiB derivation takes
+# minutes). Force opt-level 3 on argon2 even in dev/test; everything else
+# stays debug for fast incremental builds.
+[profile.dev.package.rust-argon2]
+opt-level = 3
+[profile.dev.package.sha2]
+opt-level = 3
+[profile.dev.package.chacha20]
+opt-level = 3

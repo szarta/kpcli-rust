@@ -2,9 +2,23 @@
 name = "kpcli-rust"
 version = "1.0.0"
 edition = "2021"
-description = "Offline-only command-line KeePass (KDBX4) client"
+description = "Offline-only command-line KeePass (KDBX4) client with a seccomp-bpf network sandbox"
 license = "MIT"
-publish = false
+authors = ["Brandon Arrendondo <barrendo@gmail.com>"]
+repository = "https://github.com/szarta/kpcli-rust"
+homepage = "https://github.com/szarta/kpcli-rust"
+readme = "README.md"
+keywords = ["keepass", "kdbx", "password-manager", "cli", "offline"]
+categories = ["command-line-utilities", "cryptography", "authentication"]
+# Exclude artefacts only useful inside the repo from the crates.io tarball:
+#   - the GitHub Actions workflow (will not run under crates.io)
+#   - the dev-only todo-sqlite-cli marker / db (already gitignored, but
+#     publish would otherwise warn about untracked files)
+exclude = [
+    ".github/",
+    ".todo-sqlite-cli",
+    "todo-sqlite-cli.db",
+]
 
 [dependencies]
 keepass = { version = "0.12", default-features = false, features = ["save_kdbx4"] }

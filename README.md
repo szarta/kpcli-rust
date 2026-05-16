@@ -14,11 +14,19 @@ socket. Current release: **1.0.0**.
 
 ## Install
 
-Either grab a release artifact from
+From crates.io:
+
+```bash
+cargo install kpcli-rust
+```
+
+Or grab a release artifact from
 [GitHub Releases](https://github.com/szarta/kpcli-rust/releases) —
 each `vX.Y.Z` tag publishes a tarball plus `.deb` and `.rpm` packages,
 all shipped alongside `LICENSE`, `THIRD_PARTY_LICENSES.txt`, and a
-CycloneDX SBOM — or build from source:
+CycloneDX SBOM.
+
+Or build from source:
 
 ```bash
 cargo build --release

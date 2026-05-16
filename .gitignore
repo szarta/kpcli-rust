@@ -6,3 +6,6 @@ Cargo.lock.bak
 /todo-sqlite-cli.db-shm
 /todo-sqlite-cli.db-wal
 /.todo-sqlite-cli
+# Generated per-build by cargo-about / cargo-cyclonedx in CI.
+THIRD_PARTY_LICENSES.txt
+*.cdx.json

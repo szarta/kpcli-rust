@@ -1,5 +1,6 @@
 // Build a small KDBX4 database for end-to-end testing of kpcli-rust.
-// Run with:  cargo run --example make_fixture -- /tmp/test.kdbx testpass
+// Run with:  cargo run --example make_fixture -- /tmp/test.kdbx
+// (the password is prompted on /dev/tty; never pass it on the command line)
 
 use keepass::{
     db::{fields, Database},
@@ -9,8 +10,8 @@ use std::fs::File;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
-    let path: String = args.next().expect("usage: make_fixture <path> <password>");
-    let password: String = args.next().expect("usage: make_fixture <path> <password>");
+    let path: String = args.next().expect("usage: make_fixture <path>");
+    let password = rpassword::prompt_password("fixture password: ")?;
 
     let mut db = Database::new();
     db.meta.database_name = Some("kpcli-rust test fixture".to_string());

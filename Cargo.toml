@@ -14,10 +14,13 @@ categories = ["command-line-utilities", "cryptography", "authentication"]
 #   - the GitHub Actions workflow (will not run under crates.io)
 #   - the dev-only todo-sqlite-cli marker / db (already gitignored, but
 #     publish would otherwise warn about untracked files)
+#   - examples/ (test-fixture builders only useful in-tree; keeps the
+#     published crate strictly the shipped binary + tests)
 exclude = [
     ".github/",
     ".todo-sqlite-cli",
     "todo-sqlite-cli.db",
+    "examples/",
 ]
 
 [dependencies]

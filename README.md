@@ -409,7 +409,7 @@ decision that should be re-evaluated against the threat model.
 ├── .github/
 │   └── workflows/build.yml     # CI: 5 security gates, tests, SBOM/attribution, release packaging
 ├── examples/
-│   └── make_fixture.rs         # cargo run --example make_fixture -- <path> <pw>
+│   └── make_fixture.rs         # cargo run --example make_fixture -- <path>  (password prompted)
 ├── src/
 │   ├── main.rs                 # CLI dispatch; calls sandbox::lockdown() first
 │   ├── sandbox.rs              # seccomp-bpf filter + selftest (incl. io_uring probe)

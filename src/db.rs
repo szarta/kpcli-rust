@@ -5,6 +5,7 @@ use keepass::{
     error::{DatabaseKeyError, DatabaseOpenError},
     DatabaseKey,
 };
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use zeroize::Zeroizing;
 
@@ -93,6 +94,7 @@ pub fn init_interactive(path: &Path) -> Result<()> {
     if password.is_empty() {
         anyhow::bail!("refusing to create a database with an empty password");
     }
+    println!("Passwords matched.");
 
     let mut config = DatabaseConfig::default();
     config.outer_cipher_config = OuterCipherConfig::ChaCha20;
@@ -113,10 +115,18 @@ pub fn init_interactive(path: &Path) -> Result<()> {
         database.meta.database_name = Some(name.to_string());
     }
 
+    // Argon2id at 1 GiB / 50 iterations takes several seconds on first
+    // run; print a status line (with an explicit flush, since there is no
+    // trailing newline) so the user sees that work is in progress rather
+    // than a frozen terminal.
+    print!("Generating database (Argon2id KDF, ~1 GiB memory; this may take several seconds)... ");
+    std::io::stdout().flush().ok();
+
     // Save through the same atomic path the REPL uses, so init mirrors
     // production write semantics. There is no prior file, so no expected
     // fs-id to assert against.
     save_atomic(&mut database, path, &password, None)?;
+    println!("done.");
     println!("created: {} (Argon2id + ChaCha20)", path.display());
     Ok(())
 }
